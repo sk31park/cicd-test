@@ -1,0 +1,75 @@
+name: deploy
+
+"on":
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: 이미지 주소
+        id: meta
+        run: |
+          TAG="${GITHUB_SHA::7}"
+          OWNER=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
+          IMAGE="ghcr.io/${OWNER}/jj-agent:${TAG}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: 이미지 빌드 후 GHCR에 푸시
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          OWNER=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
+          docker build --build-arg IMAGE_TAG="$TAG" -t "$IMAGE" -t "ghcr.io/${OWNER}/jj-agent:latest" .
+          docker push "$IMAGE"
+          docker push "ghcr.io/${OWNER}/jj-agent:latest"
+      - name: 패키지를 공개로 전환
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl --fail-with-body -sS -X PATCH \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            "https://api.github.com/user/packages/container/jj-agent" \
+            -d '{"visibility":"public"}'
+
+  deploy:
+    needs: build-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Render에 이 이미지 배포 요청
+        env:
+          RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+          IMAGE: ${{ needs.build-push.outputs.image }}
+        run: |
+          echo "image=${IMAGE}"
+          if [ -z "${RENDER_DEPLOY_HOOK}" ]; then
+            echo "RENDER_DEPLOY_HOOK 시크릿이 없습니다. GHCR 푸시까지만 완료했습니다."
+            exit 0
+          fi
+          curl --fail-with-body --silent --show-error --get \
+            --data-urlencode "imgURL=${IMAGE}" \
+            "${RENDER_DEPLOY_HOOK}"
+          echo
+          echo "Render 배포 요청을 보냈습니다."
