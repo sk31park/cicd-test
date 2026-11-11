@@ -13,7 +13,7 @@ _hits = 0
 
 @app.get("/")
 def root() -> dict:
-    return {"message": "cicd-test", "health": "/health", "via": "deploy-hook"}
+    return {"message": "cicd-test", "health": "/health", "via": "class-push"}
 
 
 @app.get("/health")
